@@ -1,10 +1,10 @@
-import PIL
 import wandb
 import torch
+import numpy as np
 import torch.nn as nn
-from tqdm.notebook import tqdm
-
 from piq import FID, SSIMLoss
+from tqdm.notebook import tqdm
+import torchvision.utils as vutils
 
 
 def normalize(arr, t_min, t_max):
@@ -31,7 +31,7 @@ def evaluate(generator, loader):
 
     real = torch.cat(normalize(torch.cat(real), 0, 1))
     fake = torch.cat(normalize(torch.cat(fake), 0, 1))
-
+    
     fid_metric = FID().to('cuda')
     ssim_metric = SSIMLoss(data_range=1.0).to('cuda')
     fid = fid_metric.compute_metric(real.flatten(1), fake.flatten(1))
@@ -50,44 +50,45 @@ def train(generator, discriminator, gen_optim, dis_optim, loader, n_epochs):
             b_size = real.size(0)
             label = torch.full((b_size,), 1, dtype=torch.float, device='cuda')
             output = discriminator(real).view(-1)
-            errD_real = loss_fn(output, label)
-            errD_real.backward()
+            dis_loss1 = loss_fn(output, label)
+            dis_loss1.backward()
 
             noise = torch.randn(b_size, generator.nz, 1, 1, device='cuda')
             fake = generator(noise)
             label.fill_(0)
             output = discriminator(fake.detach()).view(-1)
-            errD_fake = loss_fn(output, label)
-            errD_fake.backward()
-            errD = errD_real + errD_fake
+            dis_loss2 = loss_fn(output, label)
+            dis_loss2.backward()
+            dis_loss = dis_loss1 + dis_loss2
             dis_optim.step()
 
             generator.zero_grad()
             label.fill_(1)
             output = discriminator(fake).view(-1)
-            errG = loss_fn(output, label)
-            errG.backward()
+            gen_loss = loss_fn(output, label)
+            gen_loss.backward()
             gen_optim.step()
             
             if i == len(loader) - 1:
                 wandb.log({
-                    'gen_loss': errG.item(),
-                    'dis_loss': errD.item(),
+                    'gen_loss': gen_loss.item(),
+                    'dis_loss': dis_loss.item(),
                 }, step=cur_step)
                 
-                print(f'EPOCH {epoch}. Loss: G={errG.item():.5f}, D={errD.item():.5f}\n')
+                print(f'EPOCH {epoch}. Loss: G={gen_loss.item():.5f}, D={dis_loss.item():.5f}\n')
                 
                 torch.save({
                     'generator': generator.state_dict(),
                     'discriminator': discriminator.state_dict(),
                 }, 'last_model.pt')
                 
-                if epoch % 25 == 0 and epoch > 0:
+                if epoch % 25 == 0:
                     fid, ssim = evaluate(generator, loader)
-                    wandb.log({
-                        'FID': fid,
-                        'SSIM': ssim
-                    }, step=cur_step)
-                
-                
-            cur_step += 1
+                    wandb.log({'FID': fid, 'SSIM': ssim}, step=cur_step)
+                    
+                    eval_noise = torch.randn(64, generator.nz, 1, 1, device='cuda')
+                    with torch.no_grad():
+                        img = generator(eval_noise).detach().cpu()
+                        img = np.transpose(vutils.make_grid(img, padding=2, normalize=True), (1,2,0))
+                        wandb.log({'cats': wandb.Image(img.numpy())}, step=cur_step)
+

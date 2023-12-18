@@ -107,6 +107,11 @@ def train(generator, discriminator, gen_optim, dis_optim, loader, n_epochs, log_
                 print(f'D(x)={D_x}, D(G(z))={D_G_z1:.5f} / {D_G_z2:.5f}\n')
 
             if i == len(loader) - 1:
+                torch.save({
+                    'generator': generator.state_dict(),
+                    'discriminator': discriminator.state_dict(),
+                }, 'last_model.pt')
+
                 img = fake.detach().cpu().numpy()
                 img = (normalize(img.reshape(img.shape[1], img.shape[2], img.shape[0]), 0, 1) * 255).astype('uint8')
                 wandb.log({

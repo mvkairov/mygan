@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 from tqdm.notebook import tqdm
 
+from piq import FID, SSIMLoss
+
 def get_grad_norm(model, norm_type=2):
         parameters = model.parameters()
         if isinstance(parameters, torch.Tensor):
@@ -28,38 +30,27 @@ def normalize(arr, t_min, t_max):
     return norm_arr
 
 
-def evaluate(generator, discriminator, dataloader, fixed_noise, fid_metric, ssim_metric):
+@torch.no_grad()
+def evaluate(generator, loader):
     generator.eval()
-    discriminator.eval()
-    last_idx = 0
-    real_imgs = []
-    constructed_imgs = []
-    with torch.no_grad():
-        for data in tqdm(dataloader):
-            real = data[0].to('cuda')
-            b_size = real.size(0)
-            samples = generator(fixed_noise[last_idx:last_idx + b_size, ...])
+    noise = torch.randn(64, generator.nz, 1, 1, device='cuda')
 
-            real_imgs.append(real.detach())
-            constructed_imgs.append(samples.detach())
-            last_idx += b_size
+    last_i = 0
+    real, fake = [data[0].to('cuda') for data in loader], []
 
-    print(len(real_imgs), real_imgs[0].shape)
-    print(len(constructed_imgs), constructed_imgs[0].shape)
+    for i in len(loader):
+        b_size = real[i].size(0)
+        fake.append(generator(noise[last_i:last_i + b_size, ...]).detach())
+        last_i += b_size
 
-    real_imgs = torch.cat(real_imgs)
-    real_imgs = normalize(real_imgs, 0, 1)
-    real_imgs = torch.cat(real_imgs)
+    real = torch.cat(normalize(torch.cat(real), 0, 1))
+    fake = torch.cat(normalize(torch.cat(fake), 0, 1))
 
-    constructed_imgs = torch.cat(constructed_imgs)
-    constructed_imgs = normalize(constructed_imgs, 0, 1)
-    constructed_imgs = torch.cat(constructed_imgs)
-
-    print(real_imgs.shape, constructed_imgs.shape)
-
-    fid = fid_metric.compute_metric(real_imgs.flatten(1), constructed_imgs.flatten(1)).cpu().numpy(),
-    ssim = ssim_metric(real_imgs, constructed_imgs).item()
-    return fid, ssim
+    fid_metric = FID().to('cuda')
+    ssim_metric = SSIMLoss(data_range=1.0).to('cuda')
+    fid = fid_metric.compute_metric(real.flatten(1), fake.flatten(1))
+    ssim = ssim_metric(real, fake)
+    return fid.cpu().numpy(), ssim.item()
 
 
 def train(generator, discriminator, gen_optim, dis_optim, loader, n_epochs, log_step=50, start_step=0):
